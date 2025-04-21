@@ -1,9 +1,10 @@
 import json
 import requests
 import pycountry
-import pandas as pd
 from datetime import datetime
 from pathlib import Path
+from models import SessionLocal, EditorData
+from sqlalchemy import and_
 
 
 # Pre-2024 unpublished countries
@@ -88,7 +89,7 @@ COUNTRY_RISK_LEVELS = {
 
 def download_geojson():
     """Download GeoJSON file with country boundaries if it doesn't exist"""
-    geojson_path = DATA_DIR / 'countries.geojson'
+    geojson_path = Path("data") / 'countries.geojson'
     if not geojson_path.exists():
         url = "https://raw.githubusercontent.com/python-visualization/folium/master/examples/data/world-countries.json"
         response = requests.get(url)
@@ -100,7 +101,7 @@ def download_geojson():
 
 def alpha2_to_alpha3(alpha2):
     """Convert ISO alpha-2 to alpha-3 country code"""
-    if pd.isna(alpha2) or alpha2 == '--':
+    if alpha2 is None or alpha2 == '--':
         return None
     try:
         return pycountry.countries.get(alpha_2=alpha2).alpha_3
@@ -126,7 +127,7 @@ for feature in countries_geojson['features']:
 
 def get_risk_level(country_code):
     """Determine risk level based on country"""
-    if pd.isna(country_code) or country_code == '--':
+    if country_code is None or country_code == '--':
         return 'not_published'
     
     # Check if the country is in any of the risk level lists
@@ -134,17 +135,6 @@ def get_risk_level(country_code):
         if country_code in countries:
             return level
     return 'low'  # Default to low risk if not in any other category
-
-def download_monthly_data(year_month):
-    """Download and save monthly data file"""
-    url = f"https://analytics.wikimedia.org/published/datasets/geoeditors_monthly/{year_month}.tsv"
-    response = requests.get(url)
-    if response.status_code == 200:
-        file_path = DATA_DIR / f"{year_month}.tsv"
-        with open(file_path, 'wb') as f:
-            f.write(response.content)
-        return True
-    return False
 
 def get_available_months():
     """Get list of available months from 2023-07 to current month"""

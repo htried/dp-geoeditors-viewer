@@ -20,11 +20,23 @@ A web application for exploring Wikimedia editor data across different countries
    ```bash
    pip install -r requirements.txt
    ```
-4. Run the data update script to download initial data:
+4. Set up PostgreSQL database:
+   ```bash
+   # Create database
+   createdb geoeditors
+   
+   # Create .env file with database URL, for example
+   echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/geoeditors" > .env
+   ```
+5. Initialize the database:
+   ```bash
+   python -c "from models import init_db; init_db()"
+   ```
+6. Run the data update script to download initial data:
    ```bash
    python update_data.py
    ```
-5. Start the Flask application:
+7. Start the Flask application:
    ```bash
    python app.py
    ```

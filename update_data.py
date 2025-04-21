@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 import requests
 from datetime import datetime
-from pathlib import Path
 import logging
 import sys
 import pandas as pd
 from io import StringIO
 from utils import *
+from models import SessionLocal, EditorData
+from sqlalchemy import and_
+from pathlib import Path
 
 # Set up logging
 logging.basicConfig(
@@ -17,9 +19,6 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
-
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
 
 def add_unpublished_rows(df, month, use_legacy=True):
     """Add rows for unpublished countries to the DataFrame"""
@@ -55,30 +54,88 @@ def add_unpublished_rows(df, month, use_legacy=True):
     return df
 
 def download_monthly_data(year_month):
-    """Download and save monthly data file"""
-    url = f"https://analytics.wikimedia.org/published/datasets/geoeditors_monthly/{year_month}.tsv"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            # Read the TSV data into a DataFrame
-            df = pd.read_csv(StringIO(response.text), sep='\t', names=COLUMN_NAMES)
-            
-            # Add unpublished countries based on date
-            cutoff_date = datetime.strptime('2024-01', '%Y-%m')
-            current_date = datetime.strptime(year_month, '%Y-%m')
-            df = add_unpublished_rows(df, year_month, use_legacy=(current_date < cutoff_date))
-            
-            # Save the modified DataFrame
-            file_path = DATA_DIR / f"{year_month}.tsv"
-            df.to_csv(file_path, sep='\t', index=False, header=False)
-            logging.info(f"Successfully downloaded and processed data for {year_month}")
-            return True
-        else:
-            logging.error(f"Failed to download data for {year_month}. Status code: {response.status_code}")
+    """Download and save monthly data file to PostgreSQL"""
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
+    
+    # Define data types for each column
+    dtype = {
+        'wiki_db': str,
+        'project': str,
+        'country': str,
+        'country_code': str,
+        'activity_level': str,
+        'count_eps': float,
+        'sum_eps': float,
+        'count_release_thresh': 'Int64',
+        'editors': 'Int64',
+        'edits': 'Int64',
+        'month': str
+    }
+    
+    # Try to load from local file first
+    local_file = data_dir / f"{year_month}.tsv"
+    if local_file.exists():
+        logging.info(f"Loading data from local file for {year_month}")
+        try:
+            df = pd.read_csv(local_file, sep='\t', names=COLUMN_NAMES, dtype=dtype)
+        except Exception as e:
+            logging.error(f"Error reading local file for {year_month}: {str(e)}")
             return False
+    else:
+        # Download the file if it doesn't exist locally
+        url = f"https://analytics.wikimedia.org/published/datasets/geoeditors_monthly/{year_month}.tsv"
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                # Save the file locally
+                with open(local_file, 'w') as f:
+                    f.write(response.text)
+                
+                # Read the downloaded file
+                df = pd.read_csv(local_file, sep='\t', names=COLUMN_NAMES, dtype=dtype)
+            else:
+                logging.error(f"Failed to download data for {year_month}. Status code: {response.status_code}")
+                return False
+        except Exception as e:
+            logging.error(f"Error downloading data for {year_month}: {str(e)}")
+            return False
+    
+    # Add unpublished countries based on date
+    cutoff_date = datetime.strptime('2024-01', '%Y-%m')
+    current_date = datetime.strptime(year_month, '%Y-%m')
+    df = add_unpublished_rows(df, year_month, use_legacy=(current_date < cutoff_date))
+    
+    # Convert month string to date with explicit format
+    df['month'] = pd.to_datetime(df['month'], format='%Y-%m')
+    
+    # Create database session
+    db = SessionLocal()
+    
+    try:
+        # Delete existing data for this month if it exists
+        db.query(EditorData).filter(EditorData.month == df['month'].iloc[0]).delete()
+        
+        # Convert numeric columns to proper types
+        for col in ['count_release_thresh', 'editors', 'edits']:
+            df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
+
+        for col in ['count_eps', 'sum_eps']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Bulk insert the data
+        records = df.to_dict('records')
+        db.bulk_insert_mappings(EditorData, records)
+        
+        db.commit()
+        logging.info(f"Successfully processed data for {year_month}")
+        return True
     except Exception as e:
-        logging.error(f"Error downloading data for {year_month}: {str(e)}")
+        db.rollback()
+        logging.error(f"Database error for {year_month}: {str(e)}")
         return False
+    finally:
+        db.close()
 
 def get_available_months():
     """Get list of available months from 2023-07 to current month"""
@@ -100,9 +157,7 @@ def main():
     months = get_available_months()
     
     for month in months:
-        file_path = DATA_DIR / f"{month}.tsv"
-        if not file_path.exists():
-            download_monthly_data(month)
+        download_monthly_data(month)
     
     logging.info("Data update process completed")
 

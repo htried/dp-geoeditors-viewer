@@ -1,5 +1,4 @@
 from flask import Flask, render_template, request
-import pandas as pd
 import folium
 import branca.colormap as cm
 import logging
@@ -8,7 +7,10 @@ import math
 from utils import *
 import plotly.graph_objects as go
 import argparse
-
+from models import SessionLocal, EditorData
+from sqlalchemy import and_
+from datetime import datetime
+import pandas as pd
 
 # Set up logging
 logging.basicConfig(
@@ -29,30 +31,51 @@ def index():
 
 @app.route('/map')
 def map_view():
+    # Get available months first
     months = get_available_months()
-    month = request.args.get('month', months[-1] if months else '2023-07')
+    if not months:
+        return "No data available in the database.", 404
+        
+    # Get parameters with validation
+    month = request.args.get('month')
+    if not month or month not in months:
+        month = months[-2]  # Default to most recent month if invalid or not provided
+        
     activity_level = request.args.get('activity_level', '1 to 4')
     project = request.args.get('project', 'en.wikipedia')
     
-    # Load and process data for the map
-    file_path = DATA_DIR / f"{month}.tsv"
-    if not file_path.exists():
-        if not download_monthly_data(month):
-            return "Error downloading data. Please try again later.", 500
-    
+    # Query data from PostgreSQL
+    db = SessionLocal()
     try:
-        df = pd.read_csv(file_path, sep='\t', names=COLUMN_NAMES)
-    except Exception as e:
-        return "Error reading data file. Please try again later.", 500
-    
-    try:
-        filtered_df = df[
-            (df['activity_level'] == activity_level) & 
-            (df['project'] == project)
-        ].copy()
+        # Convert month string to date
+        month_date = datetime.strptime(month, '%Y-%m')
         
-        if len(filtered_df) == 0:
+        # Query data for the selected month, activity level, and project
+        results = db.query(EditorData).filter(
+            and_(
+                EditorData.month == month_date,
+                EditorData.activity_level == activity_level,
+                EditorData.project == project
+            )
+        ).all()
+        
+        if not results:
+            logging.warning(f"No data found for month={month_date}, activity_level={activity_level}, project={project}")
             return "No data found for the selected parameters.", 404
+        
+        # Convert results to DataFrame-like structure
+        data = []
+        for row in results:
+            data.append({
+                'country': row.country,
+                'country_code': row.country_code,
+                'editors': row.editors,
+                'activity_level': row.activity_level,
+                'project': row.project
+            })
+        
+        # Create filtered DataFrame
+        filtered_df = pd.DataFrame(data)
         
         # Convert country codes and ensure numeric data
         filtered_df['country_code_alpha3'] = filtered_df['country_code'].apply(alpha2_to_alpha3)
@@ -238,132 +261,185 @@ def map_view():
                             activity_level=activity_level,
                             project=project)
     except Exception as e:
+        logging.error(f"Error creating visualization: {str(e)}")
         return f"Error creating visualization: {str(e)}", 500
+    finally:
+        db.close()
 
 @app.route('/trends')
 def trends_view():
+    # Get parameters first
+    project = request.args.get('project', 'en.wikipedia')
+    activity_level = request.args.get('activity_level', '1 to 4')
     countries = request.args.getlist('countries')
+    
     if not countries:
         # Default to US, Britain, and India for English Wikipedia
         if project == 'en.wikipedia':
             countries = ['US', 'GB', 'IN']
-    activity_level = request.args.get('activity_level', '1 to 4')
-    project = request.args.get('project', 'en.wikipedia')
     
     try:
-        # Get unique countries for the dropdown first
-        months = get_available_months()
-        
-        # Create a list of all unique countries from all available data files
-        # Get all unique countries from utils.py
-        countries_list = get_all_unique_countries(months)
-        
-        # Only proceed with trend data if countries are selected
-        if countries:
-            all_data = []
-            for month in months:
-                file_path = DATA_DIR / f"{month}.tsv"
-                
-                if file_path.exists():
-                    df = pd.read_csv(file_path, sep='\t', names=COLUMN_NAMES)
-                    filtered_df = df[
-                        (df['activity_level'] == activity_level) & 
-                        (df['project'] == project) &
-                        (df['country_code'].isin(countries))
-                    ]
-                    filtered_df['month'] = month  # Ensure month is included
-                    all_data.append(filtered_df)
+        # Query unique countries from database
+        db = SessionLocal()
+        try:
+            countries_list = db.query(EditorData.country, EditorData.country_code).distinct().all()
+            countries_list = [{'country': c[0], 'country_code': c[1]} for c in countries_list]
+            countries_list = sorted(countries_list, key=lambda x: x['country'])
             
-            if all_data:
-                combined_df = pd.concat(all_data)
-                combined_df['editors'] = pd.to_numeric(combined_df['editors'], errors='coerce')
-                
-                # Create line plot using Plotly
-                fig = go.Figure()
-                
-                # Add traces for each country
-                for country_name in combined_df['country'].unique():
-                    country_data = combined_df[combined_df['country'] == country_name]
-                    risk_level = get_risk_level(country_data['country_code'].iloc[0])
-                    risk_info = RISK_LEVELS[risk_level]
-                    
-                    # Add the main line
-                    fig.add_trace(go.Scatter(
-                        x=country_data['month'],
-                        y=country_data['editors'],
-                        name=country_name,
-                        mode='lines',
-                        line=dict(width=2)
-                    ))
-                    
-                    # Add confidence interval if available
-                    if risk_info['ci'] is not None:
-                        fig.add_trace(go.Scatter(
-                            x=country_data['month'],
-                            y=country_data['editors'] + risk_info['ci'],
-                            mode='lines',
-                            line=dict(width=0),
-                            showlegend=False,
-                            name=f'{country_name} Upper CI'
-                        ))
-                        fig.add_trace(go.Scatter(
-                            x=country_data['month'],
-                            y=country_data['editors'].apply(lambda x: max(0, x - risk_info['ci'])),
-                            mode='lines',
-                            line=dict(width=0),
-                            fill='tonexty',
-                            fillcolor='rgba(68, 68, 68, 0.2)',
-                            showlegend=False,
-                            name=f'{country_name} Lower CI'
-                        ))
-                
-                # Customize the layout
-                fig.update_layout(
-                    title=f'Editor Count Trends - {project} - {activity_level} edits',
-                    xaxis_title="Month",
-                    yaxis_title="Number of Editors",
-                    yaxis=dict(
-                        rangemode='nonnegative',  # Ensures range starts at 0
-                        range=[0, None]  # Explicitly set minimum to 0
-                    ),
-                    hovermode='x unified',
-                    plot_bgcolor='white',
-                    paper_bgcolor='white',
-                    font=dict(family="Arial"),
-                    margin=dict(t=50, l=50, r=50, b=50),
-                    showlegend=True,
-                    legend=dict(
-                        yanchor="top",
-                        y=0.99,
-                        xanchor="left",
-                        x=0.01
+            # Only proceed with trend data if countries are selected
+            if countries:
+                # Query data for selected countries
+                results = db.query(EditorData).filter(
+                    and_(
+                        EditorData.activity_level == activity_level,
+                        EditorData.project == project,
+                        EditorData.country_code.in_(countries)
                     )
-                )
+                ).order_by(EditorData.month).all()
                 
-                plot_html = fig.to_html(
-                    full_html=False,
-                    include_plotlyjs='cdn',
-                    config={'displayModeBar': True, 'scrollZoom': True}
-                )
+                if results:
+                    # Convert results to DataFrame
+                    data = []
+                    for row in results:
+                        data.append({
+                            'country': row.country,
+                            'country_code': row.country_code,
+                            'editors': row.editors,
+                            'month': row.month.strftime('%Y-%m')
+                        })
+                    
+                    combined_df = pd.DataFrame(data)
+                    combined_df['editors'] = pd.to_numeric(combined_df['editors'], errors='coerce')
+                    
+                    # Create line plot using Plotly
+                    fig = go.Figure()
+                    
+                    # Create a list to store traces and their ordering
+                    traces = []
+                    
+                    # Process each country
+                    for country_name in combined_df['country'].unique():
+                        country_data = combined_df[combined_df['country'] == country_name]
+                        country_code = country_data['country_code'].iloc[0]
+                        risk_level = get_risk_level(country_code)
+                        risk_info = RISK_LEVELS[risk_level]
+                        
+                        # Split data into published and unpublished segments
+                        published_mask = country_data['editors'] != -1
+                        unpublished_mask = country_data['editors'] == -1
+                        
+                        # Get the most recent editor count for ordering
+                        most_recent_count = country_data['editors'].iloc[-1] if not country_data.empty else 0
+                        
+                        # Handle published data if any exists
+                        if published_mask.any():
+                            published_data = country_data[published_mask]
+                            hover_text = [
+                                f"{country_code}: {int(editors):,} ± {risk_info['ci']}"
+                                for editors in published_data['editors']
+                            ]
+                            
+                            # Create trace for published data
+                            published_trace = go.Scatter(
+                                x=published_data['month'],
+                                y=published_data['editors'],
+                                name=country_name,
+                                mode='lines',
+                                line=dict(width=2),
+                                error_y=dict(
+                                    type='constant',
+                                    value=risk_info['ci'] if risk_info['ci'] is not None else 0,
+                                    visible=True,
+                                    color='rgba(68, 68, 68, 0.3)',
+                                    thickness=1,
+                                    width=0
+                                ),
+                                hovertext=hover_text,
+                                hovertemplate='%{hovertext}<extra></extra>'
+                            )
+                            traces.append((most_recent_count, published_trace))
+                        
+                        # Handle unpublished data if any exists
+                        if unpublished_mask.any():
+                            unpublished_data = country_data[unpublished_mask]
+                            hover_text = ["Data not published for safety reasons"] * len(unpublished_data)
+                            
+                            # Create trace for unpublished data
+                            unpublished_trace = go.Scatter(
+                                x=unpublished_data['month'],
+                                y=[0] * len(unpublished_data),
+                                name=f"{country_name} (unpublished)",
+                                mode='lines',
+                                line=dict(
+                                    width=1,
+                                    color='rgba(128, 128, 128, 0.3)',
+                                    dash='dot'
+                                ),
+                                hovertext=hover_text,
+                                hovertemplate='%{hovertext}<extra></extra>',
+                                showlegend=False
+                            )
+                            traces.append((most_recent_count, unpublished_trace))
+                    
+                    # Sort traces by most recent count in descending order
+                    traces.sort(key=lambda x: x[0], reverse=True)
+                    
+                    # Add traces to figure in sorted order
+                    for _, trace in traces:
+                        fig.add_trace(trace)
+                    
+                    # Customize the layout
+                    fig.update_layout(
+                        title=f'Editor Count Trends - {project} - {activity_level} edits',
+                        xaxis_title="Month",
+                        yaxis_title="Number of Editors",
+                        yaxis=dict(rangemode='tozero'),
+                        hovermode='x unified',
+                        plot_bgcolor='white',
+                        paper_bgcolor='white',
+                        font=dict(family="Arial"),
+                        margin=dict(t=50, l=50, r=50, b=50),
+                        showlegend=True,
+                        legend=dict(
+                            yanchor="top",
+                            y=0.99,
+                            xanchor="left",
+                            x=0.01
+                        )
+                    )
+                    
+                    plot_html = fig.to_html(
+                        full_html=False,
+                        include_plotlyjs='cdn',
+                        config={'displayModeBar': True, 'scrollZoom': True}
+                    )
+                else:
+                    plot_html = "<div class='alert alert-info'>No data available for the selected parameters.</div>"
             else:
-                plot_html = "<div class='alert alert-info'>No data available for the selected parameters.</div>"
-        else:
-            plot_html = "<div class='alert alert-info'>Select one or more countries to view trends.</div>"
+                plot_html = "<div class='alert alert-info'>Select one or more countries to view trends.</div>"
+            
+            return render_template('trends.html',
+                                 plot=plot_html,
+                                 countries=countries_list,
+                                 selected_countries=countries,
+                                 activity_level=activity_level,
+                                 project=project)
         
-        return render_template('trends.html',
-                             plot=plot_html,
-                             countries=countries_list,
-                             selected_countries=countries,
-                             activity_level=activity_level,
-                             project=project)
+        finally:
+            db.close()
     
     except Exception as e:
+        logging.error(f"Error creating visualization: {str(e)}")
         return f"Error creating visualization: {str(e)}", 500
 
 if __name__ == '__main__':
-    
     parser = argparse.ArgumentParser()
-    parser.add_argument('--no-debug', action='store_true', help='Run without debug mode')
+    parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+    parser.add_argument('--host', default='0.0.0.0', help='Host to run the server on')
+    parser.add_argument('--port', default=5001, type=int, help='Port to run the server on')
     args = parser.parse_args()
     
-    app.run(debug=not args.no_debug, port=5001)
+    if args.debug:
+        app.run(host=args.host, port=args.port, debug=True)
+    else:
+        app.run(host=args.host, port=args.port)
