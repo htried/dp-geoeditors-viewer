@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Map View</h5>
+                <p class="card-text">View editor activity on a world map for a specific month and activity level.</p>
+                <a href="/map" class="btn btn-primary">Go to Map</a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Trends View</h5>
+                <p class="card-text">Compare editor counts across multiple countries over time.</p>
+                <a href="/trends" class="btn btn-primary">Go to Trends</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 

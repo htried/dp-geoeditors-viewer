@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mb-3">
+    <div class="col-md-4">
+        <label for="activity_level">Activity Level</label>
+        <select class="form-select" id="activity_level" name="activity_level">
+            <option value="1 to 4" {% if activity_level == '1 to 4' %}selected{% endif %}>1 to 4 edits</option>
+            <option value="5 to 99" {% if activity_level == '5 to 99' %}selected{% endif %}>5 to 99 edits</option>
+            <option value="100 or more" {% if activity_level == '100 or more' %}selected{% endif %}>100+ edits</option>
+        </select>
+    </div>
+    <div class="col-md-4">
+        <label for="project">Project</label>
+        <input type="text" class="form-control" id="project" name="project" value="{{ project }}">
+    </div>
+    <div class="col-md-4">
+        <label for="countries">Countries (type to search)</label>
+        <select class="form-control" id="countries" name="countries" multiple>
+            {% for country in countries %}
+            <option value="{{ country.country_code }}">{{ country.country }}</option>
+            {% endfor %}
+        </select>
+    </div>
+</div>
+<div class="row mb-3">
+    <div class="col">
+        <button class="btn btn-primary" onclick="updateTrends()">Update Trends</button>
+    </div>
+</div>
+<div class="row">
+    <div class="col">
+        <div class="card">
+            <div class="card-body p-0" style="height: calc(100vh - 300px); min-height: 600px;">
+                {{ plot | safe }}
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+$(document).ready(function() {
+    // Initialize select2
+    $('#countries').select2({
+        placeholder: 'Start typing a country name...',
+        allowClear: true,
+        width: '100%',
+        maximumSelectionLength: 10,
+        language: {
+            maximumSelected: function (e) {
+                return 'You can select up to ' + e.maximum + ' countries';
+            },
+            noResults: function() {
+                return 'No countries found - try a different search';
+            },
+            searching: function() {
+                return 'Searching...';
+            }
+        }
+    });
+
+    // Set initial values if any
+    if ({{ selected_countries|tojson|safe }}) {
+        $('#countries').val({{ selected_countries|tojson|safe }}).trigger('change');
+    }
+});
+
+function updateTrends() {
+    const activity_level = document.getElementById('activity_level').value;
+    const project = document.getElementById('project').value;
+    const selectedCountries = $('#countries').val() || [];
+    
+    const params = new URLSearchParams({
+        activity_level: activity_level,
+        project: project
+    });
+    
+    // Add each country as a separate parameter
+    selectedCountries.forEach(country => {
+        params.append('countries', country);
+    });
+    
+    window.location.href = `/trends?${params.toString()}`;
+}
+</script>
+{% endblock %} 

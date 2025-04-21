@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row mb-3">
+    <div class="col-md-4">
+        <label for="month">Month</label>
+        <select class="form-select" id="month" name="month">
+            {% for m in months %}
+            <option value="{{ m }}" {% if m == month %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-md-4">
+        <label for="activity_level">Activity Level</label>
+        <select class="form-select" id="activity_level" name="activity_level">
+            <option value="1 to 4" {% if activity_level == '1 to 4' %}selected{% endif %}>1 to 4 edits</option>
+            <option value="5 to 99" {% if activity_level == '5 to 99' %}selected{% endif %}>5 to 99 edits</option>
+            <option value="100 or more" {% if activity_level == '100 or more' %}selected{% endif %}>100+ edits</option>
+        </select>
+    </div>
+    <div class="col-md-4">
+        <label for="project">Project</label>
+        <input type="text" class="form-control" id="project" name="project" value="{{ project }}">
+    </div>
+</div>
+<div class="row mb-3">
+    <div class="col">
+        <button class="btn btn-primary" onclick="updateMap()">Update Map</button>
+    </div>
+</div>
+<div class="row">
+    <div class="col">
+        <div class="card">
+            <div class="card-body p-0" style="height: calc(100vh - 300px); min-height: 600px;">
+                {{ plot | safe }}
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function updateMap() {
+    const month = document.getElementById('month').value;
+    const activity_level = document.getElementById('activity_level').value;
+    const project = document.getElementById('project').value;
+    window.location.href = `/map?month=${month}&activity_level=${activity_level}&project=${project}`;
+}
+</script>
+{% endblock %} 
