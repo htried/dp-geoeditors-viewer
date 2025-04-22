@@ -4,10 +4,8 @@ from datetime import datetime
 import logging
 import sys
 import pandas as pd
-from io import StringIO
 from utils import *
 from models import SessionLocal, EditorData
-from sqlalchemy import and_
 from pathlib import Path
 
 # Set up logging
