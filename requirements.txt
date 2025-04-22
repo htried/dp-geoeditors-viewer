@@ -7,5 +7,6 @@ geopandas==0.14.3
 shapely==2.0.4
 pycountry==23.12.11 
 folium
+gunicorn
 psycopg2-binary==2.9.9
 SQLAlchemy==2.0.27
